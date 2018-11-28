@@ -47,164 +47,150 @@ image_size = 224
 
 position = "Axial"
 mri_weight = "T2_1"
-num_layers = [4,8,12,16]
+num_layer = 16
 
-for num_layer in num_layers:
+print("............." + position + " " + mri_weight + " " + str(num_layer) + ".............")
 
-    print("............." + position + " " + mri_weight + " " + str(num_layer) + ".............")
+vgg_conv = VGG16(weights='imagenet', include_top=False, input_shape=(image_size, image_size, 3))
 
-    vgg_conv = VGG16(weights='imagenet', include_top=False, input_shape=(image_size, image_size, 3))
+# Freeze the layers except the last 4 layers
+'''for layer in vgg_conv.layers[:-num_layer]:
+    layer.trainable = False'''
+ 
+# Check the trainable status of the individual layers
+for layer in vgg_conv.layers:
+    print(layer, layer.trainable)
 
-    # Freeze the layers except the last 4 layers
-    print(len(vgg_conv.layers))
-    for layer in vgg_conv.layers[:-num_layer]:
-        layer.trainable = False
-     
-    # Check the trainable status of the individual layers
-    for layer in vgg_conv.layers:
-        print(layer, layer.trainable)
+# Create the model
+model = models.Sequential()
+ 
+# Add the vgg convolutional base model
+model.add(vgg_conv)
+# Add new layers
+model.add(layers.Flatten())
+model.add(layers.Dense(1024, activation='relu'))
+model.add(layers.Dropout(0.5))
+model.add(layers.Dense(2, activation='softmax'))
+ 
+# Show a summary of the model. Check the number of trainable parameters
+print(model.summary())
 
-    # Create the model
-    model = models.Sequential()
-     
-    # Add the vgg convolutional base model
-    model.add(vgg_conv)
-    # Add new layers
-    model.add(layers.Flatten())
-    model.add(layers.Dense(1024, activation='relu'))
-    model.add(layers.Dropout(0.5))
-    model.add(layers.Dense(2, activation='softmax'))
-     
-    # Show a summary of the model. Check the number of trainable parameters
-    print(model.summary())
+train_datagen = ImageDataGenerator(rescale=1./255)
+validation_datagen = ImageDataGenerator(rescale=1./255)
+ 
+# Change the batchsize according to your system RAM
+train_batchsize = 32
+val_batchsize = 32
+ 
+train_generator = train_datagen.flow_from_directory(
+        train_dir,
+        target_size=(image_size, image_size),
+        batch_size=train_batchsize,
+        class_mode='categorical',
+        shuffle = True)
+ 
+validation_generator = validation_datagen.flow_from_directory(
+        validation_dir,
+        target_size=(image_size, image_size),
+        batch_size=val_batchsize,
+        class_mode='categorical',
+        shuffle = True)
 
-    train_datagen = ImageDataGenerator(rescale=1./255)
-    validation_datagen = ImageDataGenerator(rescale=1./255)
-     
-    # Change the batchsize according to your system RAM
-    train_batchsize = 10
-    val_batchsize = 10
-     
-    train_generator = train_datagen.flow_from_directory(
-            train_dir,
-            target_size=(image_size, image_size),
-            batch_size=train_batchsize,
-            class_mode='categorical')
-     
-    validation_generator = validation_datagen.flow_from_directory(
-            validation_dir,
-            target_size=(image_size, image_size),
-            batch_size=val_batchsize,
-            class_mode='categorical',
-            shuffle=False)
+# Compile the model
+model.compile(loss='categorical_crossentropy',
+              optimizer=optimizers.RMSprop(lr=1e-6),
+              metrics=['acc'])
 
-    # Initiate the train and test generators with data Augumentation 
-    train_datagen = ImageDataGenerator(rescale=1./255)
+#save model
+model_json = model.to_json()
+with open("vgg16_model"+position+"_"+mri_weight+"_"+str(num_layer)+".json", "w") as json_file:
+    json_file.write(model_json)
 
-    test_datagen = ImageDataGenerator(rescale=1./255)
+model_save_name = "vgg16_"+position+"_"+mri_weight+"_"+str(num_layer)+".h5"
 
-    # Compile the model
-    model.compile(loss='categorical_crossentropy',
-                  optimizer=optimizers.RMSprop(lr=1e-4),
-                  metrics=['acc'])
+checkpoint = ModelCheckpoint(model_save_name, 
+    monitor='val_acc', 
+    verbose=1, 
+    save_best_only=True, 
+    save_weights_only=False, 
+    mode='auto', 
+    period=1)
 
-    #save model
-    model_json = model.to_json()
-    with open("vgg16_model"+position+"_"+mri_weight+"_"+str(num_layer)+".json", "w") as json_file:
-        json_file.write(model_json)
+early = EarlyStopping(monitor='val_acc', 
+    min_delta=0.001, 
+    patience=8, 
+    verbose=1, 
+    mode='auto')
 
-    model_save_name = "vgg16_"+position+"_"+mri_weight+"_"+str(num_layer)+".h5"
+# Train the model
+start = timeit.default_timer()
 
-    checkpoint = ModelCheckpoint(model_save_name, 
-        monitor='val_acc', 
-        verbose=1, 
-        save_best_only=True, 
-        save_weights_only=False, 
-        mode='auto', 
-        period=1)
+history = model.fit_generator(
+      train_generator,
+      steps_per_epoch=train_generator.samples/train_generator.batch_size ,
+      epochs=50,
+      validation_data=validation_generator,
+      validation_steps=validation_generator.samples/validation_generator.batch_size,
+      verbose=1,
+      callbacks = [checkpoint, early])
 
-    '''reduce_lr = ReduceLROnPlateau(
-        monitor='val_loss', 
-        factor=0.5,
-        patience=3, 
-        min_lr=0.000001,
-        verbose=1)'''
+end = timeit.default_timer()
+time = end - start
 
-    early = EarlyStopping(monitor='val_acc', 
-        min_delta=0.001, 
-        patience=8, 
-        verbose=1, 
-        mode='auto')
+acc = history.history['acc']
+val_acc = history.history['val_acc']
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+ 
+epochs = range(len(acc))
 
-    # Train the model
-    start = timeit.default_timer()
+f.write("model " + position + " " + mri_weight + " " + str(num_layer) + str(time) + " " + str(val_acc[np.argmax(val_acc)]) + "\r\n")
 
-    history = model.fit_generator(
-          train_generator,
-          steps_per_epoch=train_generator.samples/train_generator.batch_size ,
-          epochs=30,
-          validation_data=validation_generator,
-          validation_steps=validation_generator.samples/validation_generator.batch_size,
-          verbose=1,
-          callbacks = [checkpoint, early])
+plt.figure()
+fig = plt.gcf()
+plt.plot(epochs, acc, 'b', label='Training acc')
+plt.plot(epochs, val_acc, 'r', label='Validation acc')
+plt.title('Training and validation accuracy ' + position + " " + mri_weight)
+plt.legend()
+fig.savefig(position + "_" + mri_weight + '_acc'+"_"+str(num_layer)+'.png', dpi=100)
+ 
+plt.figure()
+fig = plt.gcf()
+plt.plot(epochs, loss, 'b', label='Training loss')
+plt.plot(epochs, val_loss, 'r', label='Validation loss')
+plt.title('Training and validation loss' + position + " " + mri_weight)
+plt.legend()
+fig.savefig(position + "_" + mri_weight + '_loss'+"_"+str(num_layer)+'.png', dpi=100)
 
-    end = timeit.default_timer()
-    time = end - start
+from sklearn.metrics import confusion_matrix
 
-    acc = history.history['acc']
-    val_acc = history.history['val_acc']
-    loss = history.history['loss']
-    val_loss = history.history['val_loss']
-     
-    epochs = range(len(acc))
+validation_generator = validation_datagen.flow_from_directory(
+        validation_dir,
+        target_size=(image_size, image_size),
+        batch_size=val_batchsize,
+        class_mode='categorical',
+        shuffle=True)
 
-    f.write("model " + position + " " + mri_weight + " " + str(num_layer) + str(time) + " " + str(val_acc[np.argmax(val_acc)]) + "\r\n")
+# Get the filenames from the generator
+fnames = validation_generator.filenames
+ 
+# Get the ground truth from generator
+ground_truth = validation_generator.classes
+ 
+# Get the label to class mapping from the generator
+label2index = validation_generator.class_indices
+ 
+# Getting the mapping from class index to class label
+idx2label = dict((v,y) for y,v in label2index.items())
+ 
+# Get the predictions from the model using the generator
+predictions = model.predict_generator(validation_generator, steps=validation_generator.samples/validation_generator.batch_size,verbose=1)
+predicted_classes = np.argmax(predictions,axis=1)
+ 
+errors = np.where(predicted_classes != ground_truth)[0]
+print("No of errors = {}/{}".format(len(errors),validation_generator.samples))
 
-    plt.figure()
-    fig = plt.gcf()
-    plt.plot(epochs, acc, 'b', label='Training acc')
-    plt.plot(epochs, val_acc, 'r', label='Validation acc')
-    plt.title('Training and validation accuracy ' + position + " " + mri_weight)
-    plt.legend()
-    fig.savefig(position + "_" + mri_weight + '_acc'+"_"+str(num_layer)+'.png', dpi=100)
-     
-    plt.figure()
-    fig = plt.gcf()
-    plt.plot(epochs, loss, 'b', label='Training loss')
-    plt.plot(epochs, val_loss, 'r', label='Validation loss')
-    plt.title('Training and validation loss' + position + " " + mri_weight)
-    plt.legend()
-    fig.savefig(position + "_" + mri_weight + '_loss'+"_"+str(num_layer)+'.png', dpi=100)
-
-    from sklearn.metrics import confusion_matrix
-
-    validation_generator = validation_datagen.flow_from_directory(
-            validation_dir,
-            target_size=(image_size, image_size),
-            batch_size=val_batchsize,
-            class_mode='categorical',
-            shuffle=False)
-
-    # Get the filenames from the generator
-    fnames = validation_generator.filenames
-     
-    # Get the ground truth from generator
-    ground_truth = validation_generator.classes
-     
-    # Get the label to class mapping from the generator
-    label2index = validation_generator.class_indices
-     
-    # Getting the mapping from class index to class label
-    idx2label = dict((v,y) for y,v in label2index.items())
-     
-    # Get the predictions from the model using the generator
-    predictions = model.predict_generator(validation_generator, steps=validation_generator.samples/validation_generator.batch_size,verbose=1)
-    predicted_classes = np.argmax(predictions,axis=1)
-     
-    errors = np.where(predicted_classes != ground_truth)[0]
-    print("No of errors = {}/{}".format(len(errors),validation_generator.samples))
-
-    print(confusion_matrix(ground_truth, predicted_classes))
+print(confusion_matrix(ground_truth, predicted_classes))
 
 f.close()
 
